@@ -72,6 +72,7 @@ class Block(nn.Module):
         return x
 
 class GPT(nn.Module):
+    
     def __init__(self,config):
         super().__init__()
         assert config.vocab_size is not None ,"config.vocab_size is None"
@@ -85,16 +86,21 @@ class GPT(nn.Module):
              ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-    def forward(self,x):
+
+    def forward(self,inp_token,target=None):
         
-        token_emb = self.transformer.wte(x)
-        print(token_emb.shape)
-        pos_emb = self.transformer.wpe(x)
+        token_emb = self.transformer.wte(inp_token)
+        pos_emb = self.transformer.wpe(inp_token)
+
         x = self.transformer.dropout(token_emb + pos_emb)
-        print(x.shape)
+        
         for block in self.transformer.h:
             x = block(x)
         
         logits  = self.lm_head(x)
-        
-        return logits 
+
+        loss = None
+        if target is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target.view(-1), ignore_index=-1)
+        print(loss)
+        return logits , loss
