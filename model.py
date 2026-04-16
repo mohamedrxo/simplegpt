@@ -48,6 +48,19 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
+class MLP(nn.Module):
+    def __init__(self,config):
+        super().__init__()
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.act     = nn.GELU()
+        self.dropout = nn.Dropout(config.resid_pdrop)
+    def forward(self,x):
+        x = self.c_fc(x)
+        x = self.act(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+        return x
 
 class Block(nn.Module):
     """ an unassuming Transformer block """
@@ -57,18 +70,11 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = nn.ModuleDict(dict(
-            c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd),
-            c_proj  = nn.Linear(4 * config.n_embd, config.n_embd),
-            act     = nn.GELU(),
-            dropout = nn.Dropout(config.resid_pdrop),
-        ))
-        m = self.mlp
-        self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x)))) # MLP forward
+        self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlpf(self.ln_2(x))
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 class GPT(nn.Module):
@@ -90,15 +96,12 @@ class GPT(nn.Module):
     def forward(self,inp_token,target=None):
         
         device = inp_token.device
-        print('inp_token.size()',inp_token.size())
         b, t = inp_token.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
-
-        print('pos',pos)
+        
         token_emb = self.transformer.wte(inp_token)
         pos_emb = self.transformer.wpe(pos)
-        print('pos_emb',pos_emb.shape)
 
         x = self.transformer.dropout(token_emb + pos_emb)
         
@@ -110,8 +113,12 @@ class GPT(nn.Module):
         loss = None
         if target is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target.view(-1), ignore_index=-1)
-        print(loss)
+        
         return logits , loss
+    
+    def get_num_params(self):
+        n_params = sum(p.numel() for p in self.parameters())
+        return f"Total Parameters: {n_params:,}"
         
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None):
@@ -125,7 +132,6 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            print('idx_cond',idx_cond)
             logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
