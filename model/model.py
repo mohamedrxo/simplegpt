@@ -14,6 +14,8 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
+        assert config.flash is not None , "config.flash is None"
+        self.config = config
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
@@ -35,13 +37,19 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
+        if self.config.flash:
+            y = F.scaled_dot_product_attention(
+            q, k, v,
+            is_causal=True,
+              dropout_p=self.config.attn_pdrop if self.training else 0.0
+            )
+        else:
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
@@ -121,7 +129,7 @@ class GPT(nn.Module):
         return f"Total Parameters: {n_params:,}"
         
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -136,17 +144,11 @@ class GPT(nn.Module):
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
-            if top_k is not None:
-                v, _ = torch.topk(logits, top_k)
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            # apply softmax to convert logits to (normalized) probabilities
+            
             probs = F.softmax(logits, dim=-1)
             # either sample from the distribution or take the most likely element
-            if do_sample:
-                idx_next = torch.multinomial(probs, num_samples=1)
-            else:
-                _, idx_next = torch.topk(probs, k=1, dim=-1)
+            _, idx_next = torch.topk(probs, k=1, dim=-1)
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
-        return idx
+        return idx[0,1:]
