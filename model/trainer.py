@@ -7,13 +7,15 @@ from tqdm import tqdm
 class Trainer(nn.Module):
     def __init__(self,config,model,data):
         super().__init__()
+        assert config.device is not None , "no device has been set"
         self.config = config
         self.model = model
         self.data = DataLoader(data,shuffle=config.shuffle,batch_size=config.batch_size)
         self.loss_history = []
+        self.device = config.device
 
     def train(self, use_tqdm=False):
-
+        self.model = self.model.to(self.device)
         self.loss_history = []
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr)
 
@@ -26,7 +28,8 @@ class Trainer(nn.Module):
                 loader = self.data
 
             for x, y in loader:
-
+                x = x.to(self.device)
+                y = y.to(self.device)
                 _, loss = self.model(x, y)
 
                 optimizer.zero_grad()
