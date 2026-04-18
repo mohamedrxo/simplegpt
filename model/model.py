@@ -127,6 +127,17 @@ class GPT(nn.Module):
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         return f"Total Parameters: {n_params:,}"
+    
+    def get_model_size(self):
+        n_params = sum(p.numel() for p in self.parameters())
+        dtype = next(self.parameters()).dtype
+        bytes_per_param = torch.finfo(dtype).bits // 8
+        size_mb = (n_params * bytes_per_param) / (1024 ** 2)
+        print(f'model size: {size_mb:.2f} MB')
+    
+    def get_model_dtype(self):
+        dtype = next(self.parameters()).dtype
+        print(f'model dtype: {dtype}')
         
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0):
