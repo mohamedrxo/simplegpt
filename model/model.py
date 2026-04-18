@@ -17,9 +17,9 @@ class CausalSelfAttention(nn.Module):
         assert config.flash is not None , "config.flash is None"
         self.config = config
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd,dtype=config.dtype)
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd,dtype=config.dtype)
         # regularization
         self.attn_dropout = nn.Dropout(config.attn_pdrop)
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
@@ -59,8 +59,8 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self,config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd,dtype=config.dtype)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd,dtype=config.dtype)
         self.act     = nn.GELU()
         self.dropout = nn.Dropout(config.resid_pdrop)
     def forward(self,x):
@@ -75,9 +75,9 @@ class Block(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.ln_1 = nn.LayerNorm(config.n_embd,dtype=config.dtype)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.ln_2 = nn.LayerNorm(config.n_embd,dtype=config.dtype)
         self.mlp = MLP(config)
 
     def forward(self, x):
@@ -91,15 +91,17 @@ class GPT(nn.Module):
         super().__init__()
         assert config.vocab_size is not None ,"config.vocab_size is None"
         assert config.block_size is not None , "config.block_size is None"
+        if not hasattr(config, 'dtype') or config.dtype is None:
+            config.dtype = torch.float32
         self.config = config
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size,config.n_embd),
-            wpe  = nn.Embedding(config.block_size,config.n_embd),
+            wte = nn.Embedding(config.vocab_size,config.n_embd,dtype=config.dtype),
+            wpe  = nn.Embedding(config.block_size,config.n_embd,dtype=config.dtype),
             dropout = nn.Dropout(config.dropout),
             h = nn.ModuleList([ Block(config) for i in range(config.n_layers)]),
-            ln_f = nn.LayerNorm(config.n_embd),
+            ln_f = nn.LayerNorm(config.n_embd,dtype=config.dtype),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False,dtype=config.dtype)
 
     def forward(self,inp_token,target=None):
         

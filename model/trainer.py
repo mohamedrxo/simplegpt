@@ -8,6 +8,8 @@ class Trainer(nn.Module):
     def __init__(self,config,model,data):
         super().__init__()
         assert config.device is not None , "no device has been set"
+        if not hasattr(config, 'dtype') or config.dtype is None:
+            config.dtype = torch.float32
         self.config = config
         self.model = model
         self.data = DataLoader(data,shuffle=config.shuffle,batch_size=config.batch_size)
