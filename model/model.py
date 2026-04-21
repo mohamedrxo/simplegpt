@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-
+from types import SimpleNamespace
 
 class CausalSelfAttention(nn.Module):
     """
@@ -14,10 +14,11 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        assert config.flash is not None , "config.flash is None"
+        if not hasattr(config,"flash") or config.flash is None:
+            config.flash = False
         self.config = config
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd,dtype=config.dtype)
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd,dtype=config.dtype,bias=False)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd,dtype=config.dtype)
         # regularization
@@ -90,18 +91,41 @@ class GPT(nn.Module):
     def __init__(self,config):
         super().__init__()
         assert config.vocab_size is not None ,"config.vocab_size is None"
-        assert config.block_size is not None , "config.block_size is None"
+        assert config.block_size is not None , "config.block_size is None"        
+        
+        if not hasattr(config,"model_type") or config.model_type is None:
+            type_given = False
+        params_given = all([config.n_layer is not None, config.n_head is not None, config.n_embd is not None])
+        assert type_given ^ params_given # exactly one of these (XOR)
+        if type_given:
+            # translate from model_type to detailed configuration
+            model_configs = {
+                'gpt2': dict(n_layer=12, n_head=12, n_embd=768),
+                'gpt2-medium': dict(n_layer=24, n_head=16, n_embd=1024),
+                'gpt2-large': dict(n_layer=36, n_head=20, n_embd=1280),
+                'gpt2-xl': dict(n_layer=48, n_head=25, n_embd=1600),
+            }
+
+            cfg = model_configs[config.model_type]
+
+            config.n_layer = cfg['n_layer']
+            config.n_head = cfg['n_head']
+            config.n_embd = cfg['n_embd']
+            config.dropout = 0.1
+
         if not hasattr(config, 'dtype') or config.dtype is None:
             config.dtype = torch.float32
+        
         self.config = config
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size,config.n_embd,dtype=config.dtype),
             wpe  = nn.Embedding(config.block_size,config.n_embd,dtype=config.dtype),
             dropout = nn.Dropout(config.dropout),
-            h = nn.ModuleList([ Block(config) for i in range(config.n_layers)]),
+            h = nn.ModuleList([ Block(config) for i in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd,dtype=config.dtype),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False,dtype=config.dtype)
+        self.lm_head.weight = self.transformer.wte.weight
 
     def forward(self,inp_token,target=None):
         
@@ -126,6 +150,67 @@ class GPT(nn.Module):
         
         return logits , loss
     
+
+    @staticmethod
+    def get_default_config():
+        C = SimpleNamespace()
+        # either model_type or (n_layer, n_head, n_embd) must be given in the config
+        C.model_type = 'gpt'
+        C.n_layer = None
+        C.n_head = None
+        C.n_embd =  None
+        # these options must be filled in externally
+        C.vocab_size = None
+        C.block_size = None
+        # dropout hyperparameters
+        C.embd_pdrop = 0.1
+        C.resid_pdrop = 0.1
+        C.attn_pdrop = 0.1
+        return C
+
+    @classmethod
+    def from_pretrained(cls,model_type):
+        """
+        Initialize a pretrained GPT model by copying over the weights
+        from a huggingface/transformers checkpoint.
+        """
+        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+        from transformers import GPT2LMHeadModel
+
+        # create a from-scratch initialized minGPT model
+        config = cls.get_default_config()
+        config.model_type = model_type
+        config.vocab_size = 50257 # openai's model vocabulary
+        config.block_size = 1024  # openai's model block_size
+        model = cls(config)
+        print('my model',model)
+        sd = model.state_dict()
+        print(f"Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
+        # init a huggingface/transformers model
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        sd_hf = model_hf.state_dict()
+        print(f'Number of parameters in huggingface model:  {sum(p.numel() for p in model_hf.parameters()):,}',)
+        print('hf model',model_hf)
+
+        keys = [k for k in sd_hf if not k.endswith('attn.masked_bias')] # ignore these
+        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
+        # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla nn.Linear.
+        # this means that we have to transpose these weights when we import them
+        assert len(keys) == len(sd)
+        for k in keys:
+            if any(k.endswith(w) for w in transposed):
+                # special treatment for the Conv1D weights we need to transpose
+                assert sd_hf[k].shape[::-1] == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k].t())
+            else:
+                # vanilla copy over the other parameters
+                assert sd_hf[k].shape == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k])
+
+        return model
+
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         return f"Total Parameters: {n_params:,}"
